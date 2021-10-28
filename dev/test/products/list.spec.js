@@ -7,7 +7,7 @@ describe('Products endpoint', function () {
     await this.magentoApi.execute('attributes', 'set', {
       websiteId: 0,
       type: 'product',
-      attributeCodes: ['emarsys_test_fuel_type']
+      attributeCodes: ['emarsys_test_fuel_type', 'country_of_manufacture']
     });
   });
 
@@ -35,9 +35,12 @@ describe('Products endpoint', function () {
 
     await this.createProduct({
       sku: expectedProduct.sku,
-      custom_attributes: {
-        special_price: 2
-      }
+      custom_attributes: [
+        {
+          attribute_code: 'special_price',
+          value: 2
+        }
+      ]
     });
 
     const { products, productCount } = await this.magentoApi.execute('products', 'get', { page, limit, storeIds: [1] });
@@ -87,7 +90,16 @@ describe('Products endpoint', function () {
         page = 68; //this.magentoEdition === 'Enterprise' ? 70 : 68;
         break;
       case '2.3.3':
-        page = 68; //this.magentoEdition === 'Enterprise' ? 70 : 68;
+        page = 68;
+        break;
+      case '2.3.4':
+        page = 68;
+        break;
+      case '2.3.5':
+        page = 68;
+        break;
+      case '2.4.0':
+        page = 68;
         break;
       default:
         page = 67;
@@ -130,6 +142,10 @@ describe('Products endpoint', function () {
             {
               attribute_code: 'emarsys_test_number_of_seats',
               value: 6
+            },
+            {
+              attribute_code: 'country_of_manufacture',
+              value: 'AZ'
             }
           ]
         }
@@ -141,7 +157,11 @@ describe('Products endpoint', function () {
 
     expect(updatedProduct.store_data[0].extra_fields[0].key).to.be.equal('emarsys_test_fuel_type');
     expect(updatedProduct.store_data[0].extra_fields[0].value).to.be.equal('gasoline');
-    expect(updatedProduct.store_data[0].extra_fields.length).to.be.equal(1);
+
+    expect(updatedProduct.store_data[0].extra_fields[1].key).to.be.equal('country_of_manufacture');
+    expect(updatedProduct.store_data[0].extra_fields[1].value).to.be.equal('AZ');
+    expect(updatedProduct.store_data[0].extra_fields[1].text_value).to.be.equal('Azerbaijan');
+    expect(updatedProduct.store_data[0].extra_fields.length).to.be.equal(2);
   });
 
   it('returns different prices for the same product on multiple websites', async function () {
@@ -218,6 +238,33 @@ describe('Products endpoint', function () {
     expect(secondStoreItem.original_display_webshop_price).to.eql(2000);
   });
 
+  it('returns product with status 0 if its not assigned to a website', async function () {
+    const sku = '24-MB01';
+
+    await this.magentoApi.delete({
+      path: `/rest/default/V1/products/${sku}/websites/2`
+    });
+
+    const { products } = await this.magentoApi.execute('products', 'get', { page: 1, limit: 10, storeIds: [1, 2] });
+
+    const product = products.find((product) => product.sku === sku);
+    const defaultStoreItem = product.store_data.find((storeData) => storeData.store_id === 1);
+    const secondStoreItem = product.store_data.find((storeData) => storeData.store_id === 2);
+
+    expect(defaultStoreItem.status).to.eql(1);
+    expect(secondStoreItem.status).to.eql(0);
+
+    await this.magentoApi.post({
+      path: `/rest/default/V1/products/${sku}/websites/`,
+      payload: {
+        productWebsiteLink: {
+          sku,
+          website_id: 2
+        }
+      }
+    });
+  });
+
   it('returns product images for stores', async function () {
     const sku = '24-MB04';
 
@@ -246,8 +293,8 @@ describe('Products endpoint', function () {
 
     const product = products.find((product) => product.sku === sku);
 
-    const defaultStore = product.store_data.find(store => store.store_id === 1);
-    const secondStore = product.store_data.find(store => store.store_id === 2);
+    const defaultStore = product.store_data.find((store) => store.store_id === 1);
+    const secondStore = product.store_data.find((store) => store.store_id === 2);
 
     const expectedDefaultImages = {
       image: 'http://magento-test.local/pub/media/catalog/product/m/b/mb04-black-0.jpg',
@@ -295,6 +342,43 @@ describe('Products endpoint', function () {
 
       expect(products.length).to.be.equal(3);
       expect(product).not.to.be.undefined;
+    });
+  });
+
+  context('configurable price should not be 0', function () {
+    const requestParams = { page: 1, limit: 100, storeIds: [1, 2] };
+    let entityIdUsed;
+    let originalPrice;
+
+    let priceTableName = '';
+
+    const setPriceForEntityId = (entityId, value, db, magentoEdition) => {
+      const query = magentoEdition === 'Enterprise' ? { row_id: entityId } : { entity_id: entityId };
+      return db(priceTableName).where(query).update({ value });
+    };
+
+    before(async function () {
+      priceTableName = this.getTableName('catalog_product_entity_decimal');
+
+      const { products } = await this.magentoApi.execute('products', 'get', requestParams);
+      const configurableProduct = products.find((product) => product.type === 'configurable');
+      entityIdUsed = configurableProduct.entity_id;
+      originalPrice = configurableProduct.store_data.find((data) => data.store_id !== 0).price;
+
+      await setPriceForEntityId(entityIdUsed, 0, this.db, this.magentoEdition);
+      await this.reindex();
+    });
+
+    after(async function () {
+      await setPriceForEntityId(entityIdUsed, originalPrice, this.db, this.magentoEdition);
+      await this.reindex();
+    });
+    it('returns configurable product min price if price or final price is 0', async function () {
+      const { products } = await this.magentoApi.execute('products', 'get', requestParams);
+      const configurableProduct = products.find((product) => product.entity_id === entityIdUsed);
+      const notAdminStoreData = configurableProduct.store_data.find((data) => data.store_id !== 0);
+
+      expect(notAdminStoreData.price).to.equal(originalPrice);
     });
   });
 });

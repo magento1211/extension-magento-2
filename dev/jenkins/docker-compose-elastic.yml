@@ -23,9 +23,23 @@ services:
       - PHP_SENDMAIL_PATH='/usr/local/bin/mhsendmail --smtp-addr="mailhog:1025"'
     env_file:
       - .env
-    command: ["/opt/emartech/wait-for-it.sh", "db:3306", "--timeout=30", "--strict", "--", "/opt/emartech/init"]
+    command:
+      [
+        "/opt/emartech/wait-for-it.sh",
+        "db:3306",
+        "--timeout=30",
+        "--strict",
+        "--",
+        "/opt/emartech/init",
+      ]
     links:
       - db
+      - elastic
+  elastic:
+    image: elasticsearch:7.6.2
+    environment:
+      - "discovery.type=single-node"
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
   node:
     image: mage_node
     ipc: host
